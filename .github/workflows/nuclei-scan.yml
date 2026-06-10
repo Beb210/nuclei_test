@@ -1,24 +1,27 @@
-name: CRAPI Security Scan with Nuclei
+name: CRAPI Security Scan with Nuclei (OpenAPI + DAST)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master, develop ]
   schedule:
-    - cron: '0 0 * * 0'
-  workflow_dispatch:
+    - cron: '0 0 * * 0'  # Каждое воскресенье в 00:00
+  workflow_dispatch:      # Возможность ручного запуска
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     
     steps:
+      # Шаг 1: Клонируем репозиторий
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Шаг 2: Запускаем CRAPI через Docker Compose
       - name: Start crAPI
         run: |
           docker compose -f docker-compose.yml --compatibility up -d
           
+      # Шаг 3: Ждем, пока API станет доступен
       - name: Wait for crAPI to be ready
         run: |
           for i in {1..30}; do
@@ -32,6 +35,7 @@ jobs:
           echo "crAPI did not become ready in time"
           exit 1
 
+      # Шаг 4: Регистрируем тестового пользователя (если не существует)
       - name: Register test user
         id: register
         run: |
@@ -39,6 +43,7 @@ jobs:
             -H "Content-Type: application/json" \
             -d '{"email": "ci-test@example.com", "password": "CITest123!"}' || true
           
+      # Шаг 5: Получаем JWT-токен для авторизации
       - name: Get authentication token
         id: auth
         run: |
@@ -47,22 +52,40 @@ jobs:
             -d '{"email": "ci-test@example.com", "password": "CITest123!"}')
           TOKEN=$(echo $RESPONSE | jq -r '.token')
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
+          echo "Token obtained successfully"
 
-      # ИСПРАВЛЕННЫЙ ШАГ: правильный синтаксис для nuclei-action v3
-      - name: Run Nuclei scan
+      # Шаг 6: Скачиваем актуальную OpenAPI-спецификацию (на всякий случай)
+      - name: Download OpenAPI specification
+        run: |
+          curl -s -o openapi.json http://localhost:8888/swagger.json
+          echo "OpenAPI spec downloaded, size: $(wc -c < openapi.json) bytes"
+
+      # Шаг 7: Запускаем Nuclei в режиме OpenAPI + DAST
+      - name: Run Nuclei DAST scan
         uses: projectdiscovery/nuclei-action@v3
         with:
           args: |
-            -u http://localhost:8888
+            -l openapi.json
+            -im openapi
+            -dast
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}"
+            -skip-format-validation
             -severity high,critical
             -include-rr
             -j
+            -stats
+            -si 15
             -o nuclei-report.json
-          # Параметры output больше нет - он передается через -o в args
 
+      # Шаг 8: Сохраняем отчет как артефакт
       - name: Upload scan report
         uses: actions/upload-artifact@v4
         with:
-          name: nuclei-scan-report
+          name: nuclei-dast-report
           path: nuclei-report.json
+
+      # Шаг 9: Останавливаем CRAPI (опционально, для экономии ресурсов)
+      - name: Stop crAPI
+        if: always()  # Выполняется даже если предыдущий шаг упал
+        run: |
+          docker compose -f docker-compose.yml down
