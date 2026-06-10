@@ -1,27 +1,24 @@
 name: CRAPI Security Scan with Nuclei
 
 on:
-  push:                                 # Запуск при пуше в main
+  push:
     branches: [ main ]
-  schedule:                             # Еженедельный запуск
-    - cron: '0 0 * * 0'                # Каждое воскресенье в 00:00
-  workflow_dispatch:                    # Возможность запуска вручную из UI GitHub
+  schedule:
+    - cron: '0 0 * * 0'
+  workflow_dispatch:
 
 jobs:
   scan:
     runs-on: ubuntu-latest
     
     steps:
-      # Шаг 1: Клонируем ваш репозиторий
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Шаг 2: Запускаем CRAPI через Docker Compose
       - name: Start crAPI
         run: |
           docker compose -f docker-compose.yml --compatibility up -d
           
-      # Шаг 3: Ждем, пока API станет доступен (до 60 секунд)
       - name: Wait for crAPI to be ready
         run: |
           for i in {1..30}; do
@@ -35,18 +32,13 @@ jobs:
           echo "crAPI did not become ready in time"
           exit 1
 
-      # Шаг 4: Регистрируем тестового пользователя (если нужно)
       - name: Register test user
         id: register
         run: |
           curl -X POST http://localhost:8888/identity/api/auth/signup \
             -H "Content-Type: application/json" \
-            -d '{"email": "ci-test@example.com", "password": "CITest123!"}'
-          # Если пользователь уже существует, команда просто завершится с ошибкой, 
-          # но это не страшно — продолжим дальше
-          exit 0
+            -d '{"email": "ci-test@example.com", "password": "CITest123!"}' || true
           
-      # Шаг 5: Получаем JWT-токен для авторизации
       - name: Get authentication token
         id: auth
         run: |
@@ -55,21 +47,20 @@ jobs:
             -d '{"email": "ci-test@example.com", "password": "CITest123!"}')
           TOKEN=$(echo $RESPONSE | jq -r '.token')
           echo "token=$TOKEN" >> $GITHUB_OUTPUT
-          echo "Token obtained successfully"
 
-      # Шаг 6: Запускаем Nuclei-сканирование
+      # ИСПРАВЛЕННЫЙ ШАГ: правильный синтаксис для nuclei-action v3
       - name: Run Nuclei scan
         uses: projectdiscovery/nuclei-action@v3
         with:
           args: |
             -u http://localhost:8888
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}"
-            -json
-            -include-rr
             -severity high,critical
-          output: nuclei-report.json
+            -include-rr
+            -j
+            -o nuclei-report.json
+          # Параметры output больше нет - он передается через -o в args
 
-      # Шаг 7: Сохраняем отчет как артефакт (можно скачать после выполнения)
       - name: Upload scan report
         uses: actions/upload-artifact@v4
         with:
